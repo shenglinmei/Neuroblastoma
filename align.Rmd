@@ -1,0 +1,769 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Load libraries
+
+```{r echo=FALSE}
+library(pagoda2)
+library(dplyr)
+library(conos)
+library(parallel)
+library(cowplot)
+library(ggrepel)
+library(Matrix)
+#source("/home/pkharchenko/m/pavan/DLI/conp2.r")
+```
+
+
+Load kidney data
+```{r}
+source("~/m/pagoda2/R/helpers.r")
+path <- "/d0-mendel/home/pkharchenko/ninib/NB/kidney/GSE114530"
+pl <- paste(path,list.files(path=path),sep='/')
+names(pl) <- list.files(path=path)
+pl <- pl[!grepl('w9',names(pl))]
+min.size <- 1e3;
+cdl <- read.10x.matrices(pl,n.cores=30)
+cdl <- lapply(cdl,function(d) d[,colSums(d)>=min.size,drop=F])
+
+mdl <- lapply(pl,function(d) read.delim(paste(d,'annot.csv',sep='/'),sep=',',header=T,stringsAsFactors = F))
+kidney.cell.f <- setNames(unlist(lapply(mdl,function(d) d[,2])),unlist(lapply(pagoda2:::sn(names(mdl)),function(n) paste(n,mdl[[n]][,1],sep='_'))))
+```
+
+
+Get cell cycle genes
+```{r}
+cc.genes <- readRDS("~pkharchenko/m/ninib/NB/cc.genes.rds")
+```
+
+Generate p2 apps, omitting cell cycle genes and re-calculating variance norm
+```{r}
+cdl.p2 <- lapply(cdl,function(cd) {
+  cd <- cd[!rownames(cd)%in%cc.genes[,2], ]
+  basicP2proc(cd,n.cores=30,make.geneknn = FALSE,get.tsne = T,get.largevis = FALSE)
+})
+```
+
+
+```{r}
+#cdl.p2 <- lapply(cdl,basicP2proc,n.cores=20,min.cells.per.gene=-1, get.largevis=F, get.tsne=T, make.geneknn=F,n.odgenes=2e3, nPcs=50)
+```
+
+Load adrenal data
+This contains adrenal data
+```{r}
+ncdconA <- readRDS("~pkharchenko/m/ninib/NB/ncdconA.rds")
+neww_annot <- readRDS("~pkharchenko/m/ninib/NB/neww_annot.rds")
+```
+
+```{r}
+ap2 <- readRDS("~pkharchenko/m/ninib/NB/figures/fig1/ap2.p2.rds")
+```
+
+Recalculate without cell cycle genes and cluster 10
+```{r}
+x <- ap2$misc$rawCounts
+f <- ap2$clusters$PCA[[1]];
+x <- x[!rownames(x) %in% names(f)[f==10], !colnames(x) %in% cc.genes[,2]]
+ap2b <- basicP2proc(t(x),n.cores=30,make.geneknn = FALSE,get.tsne = T,get.largevis = FALSE)
+```
+
+
+
+```{r}
+cona <- Conos$new(c(cdl.p2,list("Adr"=ap2b)))
+cona$buildGraph(k=15,k.self=5,k.self.weigh=0.1,ncomps=30,n.odgenes=2e3,space='PCA')
+cona$findCommunities(method=leiden.community,resolution=1)
+cona$embedGraph(method='UMAP',seed=1,spread=10)
+cona$misc$embeddings <- list("UMAP"=cona$embedding)
+```
+
+
+
+```{r fig.height=8.5, fig.width=8.5}
+size <- 0.1; alpha <- 0.5;
+tissuef <- cona$getDatasetPerCell();
+tissuef <- as.factor(setNames(ifelse(grepl('^w',names(tissuef)),'kidney','adrenal'),names(tissuef)))
+pl <- list(cona$plotGraph(groups=tissuef, size=size, alpha=alpha,title='tissue',mark.groups=F),
+           cona$plotGraph(groups=ap2$clusters$PCA[[1]],size=size, alpha=alpha,title='adrenal clusters',plot.na=F),
+           cona$plotGraph(groups = kidney.cell.f, size=size, alpha=alpha,title='kidney',font.size=c(3,5),plot.na=F),
+           cona$plotGraph(groups = neww_annot, size=size, alpha=alpha,title='adrenal',plot.na=F))
+plot_grid(plotlist=pl,nrow=2)
+```
+
+
+```{r fig.height=4, fig.width=4}
+cona$plotGraph(groups=setNames(ap2$clusters$PCA[[1]]==7,names(ap2$clusters$PCA[[1]])),size=size, alpha=alpha,title='adrenal clusters',plot.na=F)
+```
+
+
+```{r}
+annot <- readRDS("/d0-mendel/home/meisl/Workplace/neuroblastoma/cell.annotation.Jan2020.rds")$cellano
+annot <- setNames(as.character(annot),names(annot))
+annot[annot=='unknown'] <- 'Erythroid'
+annot[annot=='Plasmacytoid'] <- 'pDC'
+annot[grep('Cytotoxic',annot)] <- 'Tcyto'
+annot[grep('T helper',annot)] <- 'Th'
+annot[grep('NK',annot)] <- 'NK'
+annot[grep('Bcell',annot)] <- 'B'
+annot[grep('PlasmaCell',annot)] <- 'Plasma'
+annot[grep('Mast',annot)] <- 'Mast'
+annot[grep("Bridge",annot)] <- 'SCP-like'
+dannot <- as.factor(annot)
+
+annot[grep("SOX11|Stress|euronal|Prolif",annot)] <- 'Noradrenergic'
+annot[grep("Bridge",annot)] <- 'SCP-like'
+annot <- as.factor(annot);
+# renamings
+levels(annot) <- gsub("Noradrenergic","Adrenergic",levels(annot))
+```
+
+Load annotations and palettes:
+```{r}
+load("../figures/fig1/annotations.RData")
+```
+
+
+
+Align everything together:
+
+```{r}
+conb <- Conos$new(c(cdl.p2,ncdconA$samples[grepl("^NB",names(ncdconA$samples))],list("Adr"=ap2b)))
+```
+
+
+```{r}
+conb$buildGraph(k=15,k.self=20,k.self.weigh=0.5,ncomps=30,n.odgenes=2e3,space='PCA')
+conb$findCommunities(method=leiden.community,resolution=1)
+conb$embedGraph(method='UMAP',seed=0, min.dist=0.01, spread=10, min.prob.lower=1e-3,n.epochs=2e3)
+conb$misc$embeddings <- list("UMAP"=conb$embedding)
+```
+
+
+```{r}
+conb$misc$embeddings$largeVis <- conb$embedGraph(method='largeVis',alpha=3, sgd_batches = 3e8)
+```
+
+```{r}
+conb$misc$embeddings$UMAP2 <- conb$embedGraph(method='UMAP', min.dist=0.01, spread=15, min.prob.lower=1e-3,n.epochs=2e3)
+```
+
+
+
+```{r fig.height=10, fig.width=10}
+size <- 0.1; alpha <- 0.1;
+tissuef <- conb$getDatasetPerCell();
+tissuef <- setNames(as.character(tissuef),names(tissuef))
+tissuef[grep("^w",tissuef)] <- 'kidney'
+tissuef[grep("^Adr",tissuef)] <- 'adrenal'
+tissuef[grep("^NB",tissuef)] <- 'NB'
+
+pl <- list(conb$plotGraph(groups=tissuef, size=size, alpha=alpha,title='tissue',mark.groups=F),
+           conb$plotGraph(groups=annot,size=size, alpha=alpha,title='neuroblastoma',plot.na=F),
+           conb$plotGraph(groups = kidney.cell.f, size=size, alpha=alpha,title='kidney',font.size=c(3,5),plot.na=F),
+          #conb$plotGraph(groups = neww_annot, size=size, alpha=alpha,title='adrenal',plot.na=F))
+          conb$plotGraph(groups = ap2$clusters$PCA[[1]], size=size*4, alpha=alpha,title='adrenal',plot.na=F))
+
+plot_grid(plotlist=pl,nrow=2)
+```
+
+```{r}
+ninib_bannot <- readRDS("~pkharchenko/m/ninib/NB/ninib_bannot.rds")
+```
+
+Update adrenal annotation
+```{r}
+adr.ann <- setNames(as.character(neww_annot),names(neww_annot));
+adr.ann[adr.ann=='Immune cells'] <- 'Kidney cells'
+adr.ann[adr.ann=='Vessels'] <- 'Endothelial'
+adr.ann[adr.ann=='Blood cells'] <- 'Erythroid'
+adr.ann[adr.ann=='Pericytes'] <- 'Mesenchymal'
+adr.ann[adr.ann=='Sympatoblasts'] <- 'Sympathoblasts'
+adr.ann[adr.ann=='Schwann cells'] <- 'SCPs'
+cl <- ap2$clusters$PCA[[1]]
+adr.ann[names(adr.ann) %in% names(cl)[cl=='18']] <- "Myeloid"
+adr.ann[names(adr.ann) %in% names(cl)[cl=='11']] <- "Lymphoid"
+adr.ann[names(adr.ann) %in% names(cl)[cl=='14']] <- "Kidney cells"
+adr.ann <- as.factor(adr.ann)
+
+set.seed(4)
+adr.pal <- sample(rainbow(length(levels(annot)),v=0.95,s=0.85));
+adr.palf <- function(n) return(adr.pal)
+```
+
+With density contour
+```{r}
+linetype <- 1; color='grey20';
+kd <- ks::kde(conb$embedding[rownames(conb$embedding) %in% names(annot)[annot=='Noradrenergic'],], compute.cont=TRUE)
+cn <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],z=estimate, levels=cont["10%"])[[1]])
+cn <- geom_path(aes(x, y), data=data.frame(cn),linetype = linetype , color=color);
+
+kd <- ks::kde(conb$embedding[rownames(conb$embedding) %in% names(annot)[annot=='Mesenchymal'],], compute.cont=TRUE)
+cm <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],z=estimate, levels=cont["10%"])[[1]])
+cm <- geom_path(aes(x, y), data=data.frame(cm),linetype = linetype , color=color);
+
+kd <- ks::kde(conb$embedding[rownames(conb$embedding) %in% names(annot)[annot=='SCP-like'],], compute.cont=TRUE, approx.cont = F)
+#kd <- ks::kde(conb$embedding[rownames(conb$embedding) %in% names(ninib_bannot)[ninib_bannot=='Fibroblast_Bridge'],], compute.cont=TRUE)
+cb <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],z=estimate, levels=cont["50%"])[[1]])
+cb <- geom_path(aes(x, y), data=data.frame(cb),linetype = linetype , color=color);
+
+```
+
+
+
+
+```{r fig.height=10, fig.width=10}
+size <- 0.1; alpha <- 0.1;
+tissuef <- conb$getDatasetPerCell();
+tissuef <- setNames(as.character(tissuef),names(tissuef))
+tissuef[grep("^w",tissuef)] <- 'kidney'
+tissuef[grep("^Adr",tissuef)] <- 'adrenal'
+tissuef[grep("^NB",tissuef)] <- 'NB'
+raster <- T;
+
+#af <- setNames(names(tissuef) %in% names(ninib_bannot)[ninib_bannot=='Fibroblast_Bridge'],names(tissuef))
+
+pl <- list(conb$plotGraph(groups=tissuef, size=size, alpha=alpha,raster=raster, title='tissue',mark.groups=F)+ theme(legend.position=c(0.85, 0.15)) + guides(color=guide_legend(override.aes = list(size=3,alpha=0.8),title='Tissue:')),
+           conb$plotGraph(groups=annot,size=size, alpha=alpha,raster=raster,title='neuroblastoma',plot.na=F,palette=annot.pal),
+           conb$plotGraph(groups = kidney.cell.f, size=size, alpha=alpha,raster=raster,title='kidney',font.size=c(3,5),plot.na=F),
+          conb$plotGraph(groups = adr.ann, size=size*4, alpha=alpha*2,raster=raster,title='adrenal',plot.na=F,palette=adr.palf,font.size=c(4,5)))
+          #conb$plotGraph(groups = ap2$clusters$PCA[[1]], size=size*4, alpha=alpha*2,title='adrenal',plot.na=F))
+
+pl <- lapply(pl,function(p) p+cn+cm+cb+ xlim(range(conb$embedding[,1]))+ylim(range(conb$embedding[,2])))
+
+pp <- plot_grid(plotlist=pl,nrow=2)
+
+pp
+```
+
+```{r}
+pdf('combined.pdf',width=10,heigh=10); print(pp); dev.off();
+invisible(lapply(1:length(pl),function(i) { pdf(paste('panel',i,'pdf',sep='.'),width=4,height=4); print(pl[[i]]); dev.off()}))
+```
+
+
+Restricted window plot for the main figure:
+
+```{r fig.height=6, fig.width=3.5}
+size <- 0.3; alpha <- 0.1;
+raster <- T;
+xlim <- c(-66,40); ylim <- c(-63,0)
+
+#af <- setNames(names(tissuef) %in% names(ninib_bannot)[ninib_bannot=='Fibroblast_Bridge'],names(tissuef))
+
+pl <- list(conb$plotGraph(groups=tissuef, size=size, alpha=alpha,raster=raster, raster.width=6.6,raster.height=4, title='tissue',mark.groups=F),
+           conb$plotGraph(groups=annot,size=size, alpha=alpha,raster=raster,title='neuroblastoma', raster.width=6.6,raster.height=4,plot.na=F,palette=annot.pal),
+           #conb$plotGraph(groups = kidney.cell.f, size=size, alpha=alpha,raster=raster,title='kidney',font.size=c(3,5),plot.na=F),
+          conb$plotGraph(groups = adr.ann, size=size*4, alpha=alpha*2,raster=raster,title='adrenal', raster.width=6.6,raster.height=4,plot.na=F,palette=adr.palf,font.size=c(4,5)))
+          #conb$plotGraph(groups = ap2$clusters$PCA[[1]], size=size*4, alpha=alpha*2,title='adrenal',plot.na=F))
+
+#pl <- lapply(pl,function(p) p+cn+cm+cb+ coord_cartesian(xlim,ylim,clip="on"))
+# pl <- lapply(pl,function(p) p+cn+cm+cb+scale_x_continuous(expand = c(0, 0)) +
+#   scale_y_continuous(expand = c(0, 0)) + xlim(xlim)+ylim(ylim)
+#   )
+
+pl <- lapply(pl,function(p) p+cn+cm+cb+coord_cartesian(expand = c(0, 0), xlim=xlim,ylim=ylim) +xlim(xlim)+ylim(ylim))
+
+
+pp <- plot_grid(plotlist=pl,ncol=1)
+pdf('combined_narrow.pdf',width=3.5,heigh=6); print(pp); dev.off();
+invisible(lapply(1:length(pl),function(i) { pdf(paste('panel',i,'narrow','pdf',sep='.'),width=3.5,height=2); print(pl[[i]]); dev.off()}))
+pp
+```
+
+
+```{r fig.height=4,fig.width=4}
+conb$plotGraph(gene='NR5A1',alpha=0.4,size=0.1)
+```
+
+```{r}
+jgrp <- conb$findCommunities(method=leiden.community,r=4)$groups
+```
+
+```{r fig.height=6,fig.width=6}
+conb$plotGraph(alpha=0.1,size=0.1,mark.groups=T,groups=jgrp)
+```
+
+
+Illustrate similarity between bridge and SCPs:
+
+Identify genes that set both populations apart from others:
+```{r}
+fac <- conb$getDatasetPerCell()
+fac <- setNames(rep('other',length(fac)),names(fac))
+#fac[names(fac) %in% c(names(adr.ann)[adr.ann=='Schwann cells'], names(annot)[annot=='SCP-like'])] <- 'SCPs'
+schwann.de <- conb$getDifferentialGenes(groups=fac,n.cores=30,append.auc=TRUE,z.threshold=0,upregulated.only=T)
+```
+
+```{r fig.width=5,fig.height=5}
+source("~/m/p2/conos/R/plot.R")
+sfac <- fac; sfac <- sfac[unlist(tapply(1:length(fac),fac,sample,min(table(fac))))]
+pp <- plotDEheatmap(conb,sfac,schwann.de,n.genes.per.cluster = 30 ,show.gene.clusters=T,row.label.font.size = 6,column.metadata = list(tissue=tissuef))
+#pdf(file='adr.heatmap.pdf',width=7,height=15); print(pp); dev.off();
+pp
+```
+
+```{r}
+fac2 <- conb$getDatasetPerCell()
+fac2 <- setNames(rep('other',length(fac2)),names(fac2))
+#fac[names(fac) %in% c(names(adr.ann)[adr.ann=='Schwann cells'], names(annot)[annot=='SCP-like'])] <- 'SCPs'
+fac2[names(fac2) %in% c(names(jgrp)[jgrp=='37'])] <- 'SCPs'
+schwann.de2 <- conb$getDifferentialGenes(groups=fac2,n.cores=30,append.auc=TRUE,z.threshold=0,upregulated.only=T)
+```
+
+```{r fig.width=14,fig.height=7}
+source("~/m/p2/conos/R/plot.R")
+sfac <- as.factor(fac2); sfac <- droplevels(sfac[unlist(tapply(1:length(fac),fac,sample,min(table(fac))))])
+pp <- plotDEheatmap(conb,sfac,schwann.de2,n.genes.per.cluster = 30 ,show.gene.clusters=T,row.label.font.size = 7,column.metadata = list(tissue=tissuef))
+#pdf(file='adr.heatmap.pdf',width=7,height=15); print(pp); dev.off();
+pp
+```
+
+There's a group within the 'other' that seems to share the SCP pattern ...
+```{r fig.height=4,fig.width=4}
+conb$plotGraph(gene='PLP1',alpha=0.4,size=0.1)
+```
+
+```{r fig.height=4,fig.width=4}
+conb$plotGraph(gene='S100B',alpha=0.4,size=0.1)
+```
+
+```{r}
+qplot <- function(g, con.obj, ann) {
+  #cat(g,' ')
+  x <- lapply(con.obj$samples[5:10],function(r) { if(g%in% colnames(r$counts)) { r$counts[,g] } else { return(NULL) } })
+  if(length(unlist(x))<1) stop('gene ',g,' is not found')
+  df <- data.frame(val=unlist(x),cell=unlist(lapply(x,names)))
+  df$cluster <- ann[match(df$cell,names(ann))]
+  df <- na.omit(df)
+  
+  mv <- max(tapply(df$val,df$cluster,quantile,p=0.8),tapply(df$val,df$cluster,mean))*1.5
+  p <- ggplot(df,aes(x=cluster,y=val,color=cluster))+geom_boxplot(outlier.shape = NA)+ stat_summary(fun.data=mean_se,geom="pointrange", color="black")+ylab(g)+ggtitle(g)+guides(colour=FALSE)+ theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust=0.5))+coord_cartesian(ylim=c(0,mv));
+  p
+}
+```
+
+
+```{r}
+markers <- c(as.character(schwann.de2$SCPs %>% arrange(-AUC) %>% head(8) %>% '$'('Gene')),'SOX10','MIA')
+```
+
+```{r fig.width=14,fig.height=20}
+pl <- lapply(markers,qplot,conb,jgrp)
+plot_grid(plotlist=pl,ncol=2)
+```
+
+It's cluster 35, which is the extension of the bridge into the fibroblasts ... most likely as a result of clustering uncertainty. 
+The cluster should be better defined on NB alone ...
+
+Check expression on the NB embedding
+```{r}
+ncdcon <- readRDS("~pkharchenko/m/ninib/NB/ncdcon.rds")
+```
+
+
+```{r fig.width=15,fig.height=5}
+p1 <- ncdcon$plotGraph(alpha=0.03,size=0.5,groups=ncdcon$clusters$rleiden$groups,plot.na=F,mark.groups=T)
+p2 <- ncdcon$plotGraph(alpha=0.03,size=0.5,plot.na=F,mark.groups=T,groups=fac)
+p3 <- ncdcon$plotGraph(alpha=0.03,size=0.5,groups=fac2,plot.na=F,mark.groups=T)
+plot_grid(plotlist=list(p1,p2,p3),nrow=1)
+```
+
+
+```{r fig.width=14,fig.height=20}
+pl <- lapply(markers,qplot,ncdcon,ncdcon$clusters$rleiden$groups)
+plot_grid(plotlist=pl,ncol=2)
+```
+
+Here to, while cluster 1-5 captures most of the SCPs, part of the signature is still notable in the cluster 5-1 that connects to the messenchymal tumor cells
+
+
+Also, in doing DE on fac2, the adrenal and NB contributions to the SCP population are very unbalanced. It's probably best to run the two separately and intersect the high-AUC genes:
+
+```{r}
+# factor for just the adrenal SCP cells
+fac3.adr <- conb$getDatasetPerCell()
+fac3.adr <- setNames(rep('other',length(fac3.adr)),names(fac3.adr))
+# remove NB SCP-like cells
+fac3.adr <- fac3.adr[!names(fac3.adr) %in% c(names(jgrp)[jgrp=='35'], names(annot)[annot=='SCP-like'], intersect(names(annot),names(jgrp)[jgrp=='37']))]
+fac3.adr[names(fac3.adr) %in% c(names(adr.ann)[adr.ann=='Schwann cells'])] <- 'adrenal SCP'
+#fac3.adr[names(fac3.adr) %in% c(names(jgrp)[jgrp=='37'])] <- 'SCPs' # use a more restrictive cluster-based definition
+fac3.adr <- droplevels(as.factor(fac3.adr))
+table(fac3.adr,conb$getDatasetPerCell()[names(fac3.adr)])
+schwann.de3.adr <- conb$getDifferentialGenes(groups=fac3.adr,n.cores=30,append.auc=TRUE,z.threshold=0,upregulated.only=T)
+```
+
+And NB only cells
+```{r}
+# factor for just the adrenal SCP cells
+fac3.nb <- conb$getDatasetPerCell()
+fac3.nb <- setNames(rep('other',length(fac3.nb)),names(fac3.nb))
+# remove NB SCP-like cells
+fac3.nb <- fac3.nb[!names(fac3.nb) %in% c(names(jgrp)[jgrp=='35'], names(adr.ann)[adr.ann=='Schwann cells'])]
+fac3.nb[names(fac3.nb) %in% c(intersect(names(annot),names(jgrp)[jgrp=='37']))] <- 'SCP-like NB'
+fac3.nb <- droplevels(as.factor(fac3.nb))
+table(fac3.nb,conb$getDatasetPerCell()[names(fac3.nb)])
+schwann.de3.nb <- conb$getDifferentialGenes(groups=fac3.nb,n.cores=30,append.auc=TRUE,z.threshold=0,upregulated.only=T)
+```
+
+Join tables and separate common and distinct markers
+```{r}
+require(magrittr)
+df <- full_join(schwann.de3.adr[['adrenal SCP']], schwann.de3.nb[['SCP-like NB']], by='Gene',suffix=c('.adr','.nb'))
+df$minAUC <- pmin(df$AUC.adr,df$AUC.nb)
+df$maxAUC <- pmax(df$AUC.adr,df$AUC.nb,na.rm=T)
+df %<>% arrange(-minAUC,maxAUC) %>% select(Gene,minAUC,maxAUC,AUC.nb,AUC.adr)
+```
+
+```{r}
+head(df,100)
+```
+
+```{r}
+tail(df,100)
+```
+
+Show combined expression pattern
+```{r}
+genes.nb <- tail(df[is.na(df$AUC.adr),],7)$Gene #7
+
+genes.adr <- tail(df[is.na(df$AUC.nb),],6)$Gene
+genes.adr <- unique(c(genes.adr,'ASCL1'))
+#genes.common <- c(head(df,14)$Gene,'SOX10','ASCL1','EGR2','DHH','OCT4','ISL1') #14
+genes.common <- unique(c(head(df,13)$Gene,'SOX10',"FOXD3" , "PMP2", "LGI4", "SEMA3B")) #14
+
+genes <- unique(c(genes.common,genes.adr,genes.nb))
+
+#cell.factor <- as.factor(c(setNames(rep('NB SCP-like',length(c1)),c1),setNames(rep("adrenal SCP",length(c2)),c2)))
+cell.factor <- c(setNames(as.character(fac3.nb),names(fac3.nb)),setNames(as.character(fac3.adr),names(fac3.adr)))
+cell.factor <- cell.factor[unique(names(cell.factor))]
+oc <- names(cell.factor)[cell.factor=='other']; cell.factor[oc] <- paste('other',as.character(tissuef[oc]),sep=' ')
+
+cell.factor <- factor(cell.factor,levels=unique(cell.factor)[c(5,3,2,4,1)])
+
+# omit kidney
+cell.factor[cell.factor=='other kidney'] <- NA; cell.factor <- droplevels(na.omit(cell.factor))
+
+xa <- do.call(rbind,lapply(pagoda2:::sn(genes),function(gene) conos:::getGeneExpression(conb,gene)))
+```
+
+Because the numbers of cells are so unbalanced, we'll randomly collapse larger groups to approximately match the number of cells in the smaller groups
+```{r}
+xc <- do.call(cbind, tapply(1:ncol(xa),cell.factor[colnames(xa)],function(ii) {
+  bin.size <- ceiling(length(ii)/min(table(cell.factor)))
+  nbins <- ceiling(length(ii)/bin.size)
+  if(bin.size >1 ) {
+    bf <- sample(rep(1:nbins,bin.size))[1:length(ii)]
+    #x <- do.call(cbind,tapply(1:length(ii),as.factor(bf),function(x) rowMeans(xa[,ii[x]])))
+    x <- do.call(cbind,tapply(1:length(ii),as.factor(bf),function(x) xa[,sample(ii[x],1),drop=F]))
+    #colnames(x) <- colnames(xa)[ii][1:ncol(x)]
+    x
+  } else {
+    return(xa[,ii])
+  }
+}))
+```
+
+
+```{r}
+# trim
+expression.quantile <- 0.75
+x <- na.omit(xc)
+#x <- na.omit(x[,names(cell.factor)])
+x <- t(apply(x, 1, function(xp) {
+  
+  if(expression.quantile<1) {
+      qs <- quantile(xp,c(1-expression.quantile,expression.quantile))
+      if(diff(qs)==0) { # too much, set to adjacent values
+        xps <- unique(xp)
+        if(length(xps)<3) { qs <- range(xp) } # only two values, just take the extremes
+        xpm <- median(xp)
+        if(sum(xp<xpm) > sum(xp>xpm)) { # more common to have values below the median
+          qs[1] <- max(xp[xp<xpm])
+        } else { # more common to have values above the median
+          qs[2] <- min(xps[xps>xpm]) # take the next one higher
+        }
+      }
+      xp[xp<qs[1]] <- qs[1]
+      xp[xp>qs[2]] <- qs[2]
+    }
+    xp <- xp-min(xp);
+    if(max(xp)>0) xp <- xp/max(xp);
+    xp
+    
+  # qs <- quantile(xp,c(1-expression.quantile,expression.quantile))
+  # #xp[xp<qs[1]] <- qs[1]
+  # if(qs[2]>0) {
+  #   xp[xp>qs[2]] <- qs[2]
+  # }
+  # xp-min(xp);
+  # xpr <- diff(range(xp));
+  # if(xpr>0) xp <- xp/xpr;
+  # xp
+}))
+
+
+```
+
+```{r fig.width=4,fig.height=7}
+require(ComplexHeatmap)
+# column annotation
+an <- data.frame(cells=cell.factor[colnames(x)],row.names = colnames(x))
+# row annotation
+gpal <- c("common SCP genes"='grey30','adrenal'='green','NB'='orange');
+rdf <- data.frame(genes=rep(names(gpal),c(length(genes.common),length(genes.adr),length(genes.nb))),name=c(genes.common,genes.adr,genes.nb)); 
+rdf <- rdf[!duplicated(rdf$name),];
+rdf <- data.frame(genes=rdf$genes,row.names=rdf$name)
+#rownames(rdf) <- c(genes.common,genes.adr,genes.nb); 
+rdf <- rdf[rownames(x),,drop=F]
+ra <- ComplexHeatmap::HeatmapAnnotation(df=rdf,which='row',show_annotation_name=FALSE, show_legend=FALSE, border=T,col=list(genes=gpal))
+
+ra <- ComplexHeatmap::HeatmapAnnotation(genes=anno_block(gp=gpar(fill=NA,col=NA),labels=names(gpal[levels(rdf$genes)]),labels_gp = gpar(fontsize=16) ),which='row',show_annotation_name=FALSE, show_legend=FALSE, border=T)
+
+#ta <- ComplexHeatmap::HeatmapAnnotation(df=an,border=T,show_legend = T,col=list(cells=c('adrenal SCP'='darkorchid4','SCP-like NB'='red','other NB'='orange','other adrenal'='green','other kidney'='royalblue3')))
+
+gpal <- c('adrenal SCP'='darkorchid4','SCP-like NB'='red','other NB'='orange','other adrenal'='green');
+ta <- ComplexHeatmap::HeatmapAnnotation(cells=anno_block(gp=gpar(fill=NA,col=NA), labels=names(gpal), labels_rot = 35,  labels_gp = gpar(just=-1, fontsize=14)))
+
+#ComplexHeatmap::Heatmap(x,name='Expression',col=colorRampPalette(c('dodgerblue1','grey95','indianred1'))(1024), left_annotation=ra, cluster_rows = F, cluster_columns = FALSE,show_row_names = T, show_column_names = F,top_annotation = ta,border=T)
+set.seed(0)
+hm <- ComplexHeatmap::Heatmap(x,name='Expression',col=colorRampPalette(c('dodgerblue1','grey95','indianred1'))(1024), left_annotation=ra, cluster_rows = F, cluster_columns = FALSE,show_row_names = T, show_column_names = F,top_annotation = ta,border=T,column_split=an[colnames(x),1], row_split=rdf[,1], row_gap = unit(1, "mm"), column_gap = unit(1, "mm"),row_names_gp = grid::gpar(fontsize = 8),column_title = NULL, row_title = NULL, heatmap_legend_param = list(legend_direction='horizontal'),use_raster = T,raster_device = "CairoPNG")
+hmp <- draw(hm, heatmap_legend_side = "bottom")
+pdf(file='scp.markers2.pdf',width=4,height=7); print(hmp); dev.off();
+```
+
+
+
+### Cell type similarity matrix
+
+Let's go with the simplest thing
+```{r}
+source("~pkharchenko/m/pavan/DLI/conp2.r")
+f1 <- setNames(as.character(adr.ann),names(adr.ann))
+#f1[f1 %in% c("Monocytes","Mast",'mDC')] <- 'Myeloid'
+f2 <- setNames(as.character(annot),names(annot))
+f2[f2 %in% c("B","ILC3",'NK','pDC','Plasma','Tcyto','Th','Treg')] <- 'Lymphoid'
+f2[f2 %in% c("Monocytes","Mast",'mDC','Macrophages')] <- 'Myeloid'
+
+groups <- as.factor(c(setNames(paste(f1,'adr',sep=':'),names(f1)),setNames(paste(f2,'nb',sep=':'),names(f2))))
+groups[grep('Erythroid|Myeloid|Lymph',groups)] <- NA; 
+groups[grep('Kidney|Cortex',groups)] <- NA; 
+groups <- droplevels(na.omit(groups))
+table(groups)                                        
+#groups <- unlist(list(annot,adr.ann))
+tcd <- cluster.expression.distances(conb,groups=groups,dist='JS',use.aggregated.matrices = T)
+sort(tcd[grepl("SCP-like:nb",rownames(tcd)),grepl(":adr",colnames(tcd))],dec=T)
+```
+
+
+Using JS distance
+```{r fig.width=4.5,fig.height=5}
+cdist <- tcd[grepl(":nb",rownames(tcd)),grepl(":adr",colnames(tcd))]
+#cdist <- tcd[levels(annot),levels(adr.ann)]
+#cdist <- t(apply(cdist,1,function(x) (x-min(x))/max(x)))
+rownames(cdist) <- gsub(":.*","",rownames(cdist))
+colnames(cdist) <- gsub(":.*","",colnames(cdist))
+col <- colorRampPalette(c('white','darkblue'))(1024)
+#col <- circlize::colorRamp2(c(0.7, 0.9), c("white", "darkblue"))
+Heatmap(1-cdist,col=col, cluster_rows = T,cluster_columns = T,border=T)
+```
+
+Correlation-based
+```{r}
+tc <- conos:::rawMatricesWithCommonGenes(conb) %>% 
+  lapply(conos:::collapseCellsByType, groups=as.factor(groups), min.cell.count=0) %>%
+  abind(along=3) %>%
+  apply(c(1,2),sum,na.rm=T)
+lib.size.scale <- 1e6;
+tc <- log10(t(tc/pmax(1,rowSums(tc)))*lib.size.scale+1)
+
+#tcd <- cor(tc)
+
+```
+
+Using top overdispersed genes
+```{r}
+gns <- ap2$misc$varinfo %>% tibble::rownames_to_column('gene') %>% arrange(-qv) %>% head(2e3) %>% '$'('gene')
+tcd <- cor(tc[rownames(tc) %in% gns,])
+#tcd <- cor(tc)
+sort(tcd[grepl("SCP-like:nb",rownames(tcd)),grepl(":adr",colnames(tcd))],dec=T)
+```
+
+
+```{r fig.width=4.5,fig.height=4.2}
+cdist <- tcd[grepl(":nb",rownames(tcd)),grepl(":adr",colnames(tcd))]
+#cdist <- tcd[levels(annot),levels(adr.ann)]
+rownames(cdist) <- gsub(":.*","",rownames(cdist))
+colnames(cdist) <- gsub(":.*","",colnames(cdist))
+col <- colorRampPalette(c('white','darkblue'))(1024)
+col <- circlize::colorRamp2(c(0.4, 0.7), c("white", "darkblue"))
+cdist <- cdist[c(4,6,5,1,2,3),c(1,5,4,2,3)]
+cm <- Heatmap(cdist,col=col, cluster_rows = F,cluster_columns = F,border=T,name='correlation',column_names_side='top',column_title = 'Adrenal cell types',row_title='NB cell types',column_title_side = 'bottom')
+pdf(file='adrenal.match.pdf',width=4,height=3.9); print(cm); dev.off();
+cm
+```
+
+
+
+
+
+
+
+
+
+
+# DEBUG
+
+```{r}
+x <- na.omit(xa)
+x <- na.omit(x[,names(cell.factor)])
+x <- x>0
+class(x) <- 'numeric'
+```
+
+
+```{r fig.width=6,fig.height=10}
+annot <- data.frame(clusters=cell.factor[colnames(x)],row.names = colnames(x))
+ta <- ComplexHeatmap::HeatmapAnnotation(df=annot,border=T,show_legend = T)
+ComplexHeatmap::Heatmap(x,col=colorRampPalette(c('white','gray20'))(1024),cluster_rows = F, cluster_columns = FALSE,show_row_names = T, show_column_names = F,top_annotation = ta,border=T)
+```
+
+
+```{r fig.width=14,fig.height=7}
+source("~/m/p2/conos/R/plot.R")
+sfac <- as.factor(fac2); sfac <- droplevels(sfac[unlist(tapply(1:length(fac),fac,sample,min(table(fac))))])
+pp <- plotDEheatmap(conb,sfac,schwann.de2,n.genes.per.cluster = 30 ,show.gene.clusters=T,row.label.font.size = 7,column.metadata = list(tissue=tissuef))
+#pdf(file='adr.heatmap.pdf',width=7,height=15); print(pp); dev.off();
+pp
+```
+
+
+
+Try adrenal SCP markers
+```{r}
+adr.de <- ap2$getDifferentialGenes(type='PCA',groups=adr.ann,append.auc=TRUE,z.threshold=0,upregulated.only=T)
+```
+
+```{r fig.width=6,fig.height=8}
+source("~/m/p2/conos/R/plot.R")
+pp <- plotDEheatmap(ap2,adr.ann,adr.de,n.genes.per.cluster = 10 ,show.gene.clusters=T,row.label.font.size = 6,order.clusters = T)
+#pdf(file='adr.heatmap.pdf',width=7,height=15); print(pp); dev.off();
+pp
+```
+
+
+```{r fig.width=6,fig.height=8}
+source("~/m/p2/conos/R/plot.R")
+sfac <- adr.ann; sfac <- droplevels(sfac[sfac %in% c("Chromaffin cells","Schwann cells","Sympathoblasts")])
+pp <- plotDEheatmap(ap2,sfac,adr.de,n.genes.per.cluster = 30 ,show.gene.clusters=T,row.label.font.size = 6)
+#pdf(file='adr.heatmap.pdf',width=7,height=15); print(pp); dev.off();
+pp
+```
+
+```{r}
+
+```
+
+Identify genes that distinguish the two populations
+```{r}
+d.fac <- conb$getDatasetPerCell()
+d.fac <- setNames(rep('other',length(d.fac)),names(d.fac))
+d.fac[names(d.fac) %in% c(names(adr.ann)[adr.ann=='Schwann cells'])] <- 'normal SCPs'
+d.fac[names(d.fac) %in% c(names(annot)[annot=='SCP-like'])] <- 'tumor SCPs'
+tum.norm.de <- conb$getDifferentialGenes(groups=d.fac, n.cores=30,append.auc=TRUE,z.threshold=0,upregulated.only=T)
+```
+
+Combine in a heatmap:
+
+
+
+### Misc stuff
+```{r fig.width=15,fig.height=5}
+
+p1 <- ncdcon$plotGraph(alpha=0.03,size=0.5,groups=annot,plot.na=F,mark.groups=T)
+p2 <- ncdcon$plotGraph(alpha=0.03,size=0.5,gene='PRRX1',plot.na=F,mark.groups=T)
+p3 <- ncdcon$plotGraph(alpha=0.03,size=0.5,gene='PHOX2B',plot.na=F,mark.groups=T)
+plot_grid(plotlist=list(p1,p2,p3),nrow=1)
+```
+As factors
+```{r}
+ascl1e <- conos:::getGeneExpression(ncdcon,'ASCL1')
+phox2be <- conos:::getGeneExpression(ncdcon,'PHOX2B')
+prrx2e <- conos:::getGeneExpression(ncdcon,'PRRX2')
+prrx1e <- conos:::getGeneExpression(ncdcon,'PRRX1')
+sox10e <- conos:::getGeneExpression(ncdcon,'SOX10')
+foxd3e <- conos:::getGeneExpression(ncdcon,'FOXD3')
+
+dc <- sox10e>0 & phox2be>0
+x <- lapply(ncdcon$samples,function(d) d[['misc']][['rawCounts']])
+```
+
+```{r fig.width=15,fig.height=5}
+p1 <- ncdcon$plotGraph(alpha=0.03,size=0.5,groups=annot,plot.na=F,mark.groups=T)
+p2 <- ncdcon$plotGraph(alpha=0.03,size=0.5,gene='SOX10',plot.na=F,mark.groups=T)
+p3 <- ncdcon$plotGraph(alpha=1,size=2,groups=sox10e>0 & phox2be>0,plot.na=F,mark.groups=F,palette=c(adjustcolor('grey90',alpha=0.01),'red'))
+plot_grid(plotlist=list(p1,p2,p3),nrow=1)
+```
+
+
+
+```{r fig.width=5, fig.height=5}
+ncdcon$samples$NB26$plotEmbedding(groups=annot,type='PCA',mark.clusters = T,mark.cluster.cex = 1,embeddingType='tSNE')
+```
+
+```{r fig.width=5, fig.height=5}
+#dc <- sox10e>0 & ascl1e>0
+dc <- sox10e>0 & phox2be>0
+dc <- foxd3e>0 & phox2be>0
+dc <- sox10e>0 & prrx2e>0
+dc <- sox10e>0 & prrx1e>0
+dc <- phox2be>0 & prrx1e>0
+dc <- phox2be>0.3 & prrx1e>0.3 & sox10e>0
+table(dc)
+names(dc)[dc]
+em <- ncdcon$samples$NB26$embeddings$PCA[[2]]
+plot(em[,1],em[,2],pch=19,cex=0.2,col=adjustcolor(1,alpha=0.01))
+vc <- names(dc)[dc]
+points(em[rownames(em) %in% vc,1],em[rownames(em) %in% vc,2],col=2)
+```
+
+
+```{r fig.width=5, fig.height=5}
+vc <- names(dc)[dc]; vc <- vc[grepl('^NB',vc)]
+df <- data.frame(phox2b=phox2be[vc],prrx1=prrx1e[vc],type=annot[vc],cell=vc)
+ggplot(df,aes(x=phox2b,y=prrx1,colour=type)) + geom_point()
+```
+
+
+```{r fig.width=5, fig.height=5}
+plot(ncdcon$embedding[,1],ncdcon$embedding[,2],pch=19,cex=0.2,col=adjustcolor(1,alpha=0.01))
+vc <- names(dc)[dc]
+points(ncdcon$embedding[rownames(ncdcon$embedding) %in% vc,1],ncdcon$embedding[rownames(ncdcon$embedding) %in% vc,2],col=2)
+```
+
+```{r fig.width=5, fig.height=5}
+emb <- acon$embedding
+plot(emb[,1],emb[,2],pch=19,cex=0.2,col=adjustcolor(1,alpha=0.01))
+vc <- names(dc)[dc]
+table(vc %in% rownames(emb))
+points(emb[rownames(emb) %in% vc,1],emb[rownames(emb) %in% vc,2],col=2)
+```
+
+```{r fig.width=5, fig.height=5}
+plot(ncdcon$embedding[,1],ncdcon$embedding[,2],pch=19,cex=0.2,col=sccore:::fac2col(annot[match(rownames(ncdcon$embedding),names(annot))]))
+```
+
+```{r}
+acon <- readRDS("~pkharchenko/m/ninib/NB/acon.rds")
+```
+
+```{r fig.width=10,fig.height=3.5}
+#p1 <- acon$plotGraph(alpha=0.01,size=0.2,groups=con$getDatasetPerCell())
+p1 <- acon$plotGraph(alpha=0.01,size=0.5,groups=scrubletf,mark.groups=F,plot.na=F,palette=function(n) c('gray','red'),title="Scrublet")
+p2 <- acon$plotGraph(alpha=0.01,size=0.5,groups=bannot,plot.na=F,mark.groups=T,title="Annotations")
+p3 <- acon$plotGraph(alpha=0.01,size=0.5,gene="MKI67",title="MKI67")
+pp <- plot_grid(plotlist=list(p1,p3,p2),nrow=1)
+pp
+```
