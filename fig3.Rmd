@@ -1,0 +1,302 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+source('Lib.R')
+source('utils.R')
+
+```
+
+
+# conos object
+
+```{r}
+con1=readRDS('/home/meisl/Workplace/neuroblastoma/Figures/Fig3/Neuron//Neuron_conos.rds')
+
+```
+
+
+```{r}
+unique(neu4)
+
+```
+
+```{r}
+neu5=neu4[neu4!='NonAmplified']
+```
+
+
+```{r}
+neu.pal=readRDS('neu.pal.rds')
+neu.palf <- function(n) return(neu.pal)
+
+```
+
+
+```{r}
+neu.pal
+```
+
+
+```{r fig.height=4,fig.width=5}
+
+a2=con1$plotGraph(groups=neu5,alpha=0.2,size=0.2,plot.na=F,font.size = c(5, 6),palette=neu.palf)
+a2
+ggsave('F3A.png',a2,height=2.6,width=3.5)
+
+
+```
+
+```{r}
+
+lis=list()
+name2=names(neu5)
+
+gs=c('ISL1','PNMT','GAP43','PRPH','NTRK1','SOX11','EZH2','MKI67')  #,'GAP43'
+
+
+for (x in gs){
+  dis=(-3.+nchar(x)*0.2)
+  if (x %in% c('PHOX2B')){
+    dis=-2.8+nchar(x)*0.2
+    
+  }
+  tmp=con1$plotGraph(colors=exp[name2,x],plot.na=F,size=0.1,alpha=0.7)+annotate("text", x = dis, y=-3.45, label = x,size=5.4) 
+
+  lis[[x]]=tmp
+}
+
+
+names(lis)
+
+lrow=3
+lcol=3
+
+#lis[['ano']]=con1$plotGraph(groups=neu4,plot.na=F,size=0.1,alpha=0.3)
+
+
+b=  cowplot::plot_grid(plotlist=lis, ncol=lrow, nrow=lcol)
+b
+```
+
+
+
+
+
+```{r}
+
+con=readRDS('/home/meisl/Workplace/neuroblastoma/Mar2020/all.con_conos.rds')
+
+a2=con$plotGraph(groups=neu4,alpha=0.08,size=0.2,plot.na=F,font.size = c(4, 5),palette=neu.palf)
+a2
+```
+
+
+
+
+```{r}
+
+
+# velocity 
+
+
+spliced=readRDS('/home/meisl/Workplace/neuroblastoma/velocity/spliced.rds')
+unspliced=readRDS('/home/meisl/Workplace/neuroblastoma/velocity/unspliced.rds')
+
+output=function(appname,group4,emb,spliced,unspliced){
+  
+  obs=data.frame('name'=names(group4),'clusters'=group4)
+  cell=names(group4)
+  
+  splicedf=spliced[,cell]
+  unsplicedf=unspliced[,cell]
+  gs=rownames(splicedf)
+  
+  Matrix::writeMM(splicedf,paste(appname,'.splicedf.mtx',sep=''))
+  Matrix::writeMM(unsplicedf,paste(appname,'.unsplicedf.mtx',sep=''))
+  write.csv(obs,paste(appname,'.obs.csv',sep=''),row.names=F)
+  write.csv(emb,paste(appname,'.emb.csv',sep=''),row.names=F,col.names=F)
+  write.csv(gs,paste(appname,'.gs.csv',sep=''),row.names=F,col.names=T)
+}
+
+
+select=c('NB26', 'NB09' ,'NB12', 'NB13', 'NB15')
+
+name2=names(neu5)
+
+#select=c('NB12','NB13','NB24')
+for (i in select){
+  tnname=name2[grepl(i,name2)]
+  print(table(neu[tnname]))
+  output(paste('dat.neuronal.',i,sep=''),neu[tnname],con1$embedding[tnname,],spliced,unspliced)
+}
+
+
+```
+
+
+
+```{r}
+
+
+library(biomaRt)
+ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl")
+cc.genes <- getBM(attributes = c('entrezgene_id','hgnc_symbol'), filters = 'go', values = c('GO:0045202'), mart = ensembl)
+
+ggs=list('synaptic machinery'=as.character(cc.genes[,2]))
+
+
+
+```
+
+
+
+```{r}
+  gs=intersect(as.character(cc.genes[,2]),colnames(exp))
+  cname=names(neu5)
+  samp=Toch(con1$getDatasetPerCell())
+  
+  
+  table(samp[cname])
+  
+  # remvoe sampls with less than 100 cells 
+  cname=cname[!grepl('NB16|NB17|NB18|NB22',cname)]
+
+
+```
+
+
+
+```{r}
+library(ggpubr)
+library(scProcess)
+  dfTIM=getScore(t(exp),gs,neu5[cname],samp[cname],neu5[cname],magnitude.normal=NULL,rscore=NULL)
+
+```
+
+
+```{r fig.width=3,fig.height=4}
+
+  
+  #head(dfM2)
+  ylab='synaptic machinery score'
+  tmp=dfTIM
+  limHeight=1.3
+  sig=compare_means(score ~ cell,  data = tmp)
+  sig=sig[sig$p.signif!='ns',]
+  sig=sig[order(sig$p.adj),][1:3,]
+  sig=sig[!is.na(sig[,1]),]
+  siglis=split(sig, seq(nrow(sig)))
+  pair=lapply(siglis,function(x) as.character(x[,2:3]))
+  pair
+  
+  library(ggpubr)
+
+  p1=ggplot(na.omit(tmp),aes(x=cell,y=score,fill=cell))+geom_boxplot(notch=FALSE,outlier.shape=NA)+theme_classic()
+  p1=p1+ geom_point(data = na.omit(tmp),shape=21, size = 1) + #, position = position_jitterdodge()
+    stat_compare_means(comparisons = pair,label = "p.signif",hide.ns=TRUE,size=3,tip.lengt=0.01,bracket.size =0.3,label.y.npc = "bottom")  #+ # Add pairwise comparisons p-value
+  
+  p1=p1+ theme(legend.position="none")+ylab(ylab)
+  p1=p1+theme(axis.text.x = element_text(angle = 45, hjust = 1))+xlab('')
+  p1=p1+ylim(c(min(tmp$score),max(tmp$score)*limHeight))+scale_fill_manual(values=neu.pal)
+  p1
+```
+
+```{r fig.height=4,fig.width=4}
+
+  annot=readRDS('../annot') # overall cell annotation 
+  tmp=annot[!annot %in% c("Adrenergic")]
+  
+  anonew=c(Toch(tmp),Toch(neu4))
+  
+  table(anonew)
+  
+  
+  samp=Toch(con$getDatasetPerCell())
+  cname=names(anonew)
+  ano2=data.frame('Cell'=anonew[cname],'Sample'=samp[cname])
+  
+  # Annotation vs sample
+  tmp2 <- acast(ano2, Cell ~ Sample, fun.aggregate=length)
+  # Normalise for the number of cells in each library
+  tmp3 <- (sweep(tmp2, 2, colSums(tmp2), FUN='/'))
+
+  
+  tab=table(samp[names(neu4)])
+  tab=names(tab[tab>100])
+ 
+  
+  df <- data.frame(patient=tab,x=tmp3['Immature',tab],y=tmp3['Proliferating',tab])
+  
+  library(ggrepel)
+  
+  ct <- cor.test(df$x,df$y,alternative='greater')
+  p1 <- ggplot(df, aes(x=x,y=y,label=patient)) + geom_point(aes(color=patient))  + 
+    geom_smooth(method='lm',color='gray40',linetype='dashed',alpha=0.15,size=0.5) + theme_bw() + 
+    theme(axis.text.y=element_text(angle=90)) + geom_text_repel(aes(color=patient)) + guides(color=F) + 
+    xlab("Immature abundance") + ylab("Proliferating abundance") +# xlim(range(df$x))+ylim(c(min(df$y),0.16))+
+    geom_text(x=-Inf,y=Inf,label=paste('R=',round(ct$estimate,2),' ','p=',round(ct$p.value,2),sep=''),hjust=-0.05,vjust=1.2,size=3.5)
+  
+  p1
+  
+```
+
+
+```{r}
+
+  scon=readRDS('/home/meisl/Workplace/neuroblastoma/Mar2020/all.con_conos.rds')
+  
+  
+  sn=function(x) { names(x) <- x; return(x); }
+  
+  
+  cm <- scon$getClusterCountMatrices(groups=anonew)
+  samples=scon$samples
+  
+  
+  
+  ctdm <- lapply(cm,function(x) {apply(x,2,function(x) log10((x/pmax(1,sum(x)))*1e3+1 ) )} )
+  
+  
+  ctdm2 <- lapply(sn(colnames(ctdm[[1]])),function(ct) {
+    tcm <- do.call(rbind,lapply(ctdm,function(x) x[,ct]))
+    tcm
+  })
+  
+```
+
+
+```{r fig.height=4,fig.width=4}
+d1=ctdm2$`SOX11/WNT`
+  d2=ctdm2$Proliferating
+  
+  g1='SOX11'
+  g2='MKI67'
+  
+  #for (g2 in c('MKI67','EZH2','TOP2A','CDK1')){
+  
+  df=data.frame('x'=d1[tab,g1],'y'=d2[tab,g2],'patient'=tab)
+
+
+ct <- cor.test(df$x,df$y,alternative='greater')
+p1 <- ggplot(df, aes(x=x,y=y,label=patient)) + geom_point(aes(color=patient))  + 
+  geom_smooth(method='lm',color='gray40',linetype='dashed',alpha=0.15,size=0.5) + theme_bw() + 
+  theme(axis.text.y=element_text(angle=90)) + geom_text_repel(aes(color=patient)) + guides(color=F) + 
+  xlab("SOX11 exp in Immature") + ylab("MKI67 exp in Proliferating") + 
+  geom_text(x=-Inf,y=Inf,label=paste('R=',round(ct$estimate,2),' ','p=',round(ct$p.value,2),sep=''),hjust=-0.05,vjust=1.2,size=3.5)
+
+p1
+
+
+```
+
+
+
+
+
+
+
+

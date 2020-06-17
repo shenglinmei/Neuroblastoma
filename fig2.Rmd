@@ -1,0 +1,369 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+source('Lib.R')
+source('utils.R')
+```
+
+
+
+
+
+```{r}
+setwd('/home/meisl/Workplace/neuroblastoma/Figures/Fig2')
+
+con=readRDS('/home/meisl/Workplace/neuroblastoma/ncdcon.rds')
+
+```
+
+
+
+```{r}
+
+annot <- readRDS("/d0-mendel/home/meisl/Workplace/neuroblastoma/cell.annotation.Jan2020.rds")$cellano
+annot <- setNames(as.character(annot),names(annot))
+annot[annot=='unknown'] <- 'Th' # Ca2+ mediated apoptosis, involivng LCK, CD3D, RAC2, etc. Lumping in with Th 
+annot[annot=='Plasmacytoid'] <- 'pDC'
+annot[grep('Cytotoxic',annot)] <- 'Tcyto'
+annot[grep('T helper',annot)] <- 'Th'
+annot[grep('NK',annot)] <- 'NK'
+annot[grep('Bcell',annot)] <- 'B'
+annot[grep('PlasmaCell',annot)] <- 'Plasma'
+annot[grep('Mast',annot)] <- 'Mast'
+annot[grep("Bridge",annot)] <- 'SCP-like'
+
+
+dannot <- as.factor(annot)
+
+annot[grep("SOX11|Stress|euronal|Prolif",annot)] <- 'Noradrenergic'
+annot[grep("Bridge",annot)] <- 'SCP-like'
+annot <- as.factor(annot);
+
+```
+
+
+
+
+```{r}
+sample=con$getDatasetPerCell()
+
+
+# pie chart for cell frequnce among samles 
+
+set.seed(3)
+annot.pal <- setNames(sample(rainbow(length(levels(annot)),v=0.95,s=0.7)),levels(annot));
+annot.palf <- function(n) return(annot.pal)
+dannot.pal <- setNames(sample(rainbow(length(levels(dannot)),v=0.85,s=0.9)),levels(dannot));
+x <- which(levels(dannot) %in% levels(annot)); dannot.pal[x] <- annot.pal[match(levels(dannot)[x],levels(annot))]
+dannot.palf <- function(n) return(dannot.pal)
+
+
+
+# for samples
+sample.pal <- setNames(sample(rainbow(length(con$samples),v=0.7,s=0.9)),names(con$samples))
+sample.pal <- sample.pal[c(sort(names(sample.pal))[-1],'Adr')]
+sample.palf <- function(n) return(sample.pal[1:n])
+sample.palf <- function(n) { browser(); return(sample.pal[1:n])}
+
+```
+
+
+
+
+
+```{r}
+
+
+cname=names(annot)
+
+# expression matrix 
+exp=mergeDat2(lapply(con$samples,function(x) t(x$counts)))
+
+
+
+gs=c('TH','ACTA2','DCN','VWF','PLVAP','CD3D','CD4','CD8A','XCL1','IGHG1','MS4A1','TPSAB1','LILRA4','LYZ',
+     'S100B','PDGFRB')       
+
+length(gs)
+
+lcol=4
+lrow=4
+lis=list()
+for (gene in gs){
+  print(gene)
+  alpha =0.2
+  if (gene %in% c('IL10','IL1B')){
+    alpha =0.5
+  }
+ # a=con$plotGraph(colors =exp[gene,cname],title=gene,alpha =alpha,plot.na=F,size=0.2)+ theme(plot.title = element_text(size=19,hjust = 0.5))
+  a=con$plotGraph(colors =exp[gene,cname],alpha =alpha,plot.na=F,size=0.1)+annotate("text", x = -33+nchar(gene), y=46, label = gene,size=3.9)
+  lis[[gene]]=a
+}
+b=  cowplot::plot_grid(plotlist=lis, ncol=lrow, nrow=lcol)
+ggsave('S1.markerGene.pdf',b,width = 2*lrow,height=2*lcol)
+
+```
+
+```{r}
+b
+```
+
+
+```{r}
+cname=names(annot)
+
+###
+annot=as.factor(annot)
+sannot <- setNames(as.character(annot),names(annot));
+sannot[grep("^T|ILC3|NK",sannot)] <- 'T cells'
+sannot[grep("^B$|Plasma|pDC",sannot)] <- 'B cells'
+sannot[grep("Macrop|Mono|mDC|Mast",sannot)] <- 'Myeloid'
+sannot <- as.factor(sannot)
+sannot=ordered(sannot,levels=c("Adrenergic"  ,   "B cells"   , "Pericytes"    ,    "Endothelial" ,  "Myeloid"  ,  "Mesenchymal"     ,    "Myofibroblasts",
+                                 "SCP-like"   ,    "T cells" ))
+
+sannot.pal <- setNames(annot.pal[match(levels(sannot),names(annot.pal))],levels(sannot))
+sannot.pal['T cells'] <- annot.pal['Tcyto']
+sannot.pal['B cells'] <- annot.pal['B']
+sannot.pal['Myeloid'] <- annot.pal['Macrophages']
+
+
+
+
+library(reshape2)
+
+ano2=data.frame('Cell'=sannot[cname],'SampleType'=sample[cname])
+
+# Annotation vs sample
+tmp2 <- acast(ano2, Cell ~ SampleType, fun.aggregate=length)
+#head(tmp2)
+# Normalise for the number of cells in each library
+tmp3 <- (sweep(tmp2, 2, colSums(tmp2), FUN='/'))
+tmp4 <- melt(tmp3)
+#head(tmp4)
+names(tmp4) <- c('cell', 'sample','pc.of.sample')
+#head(tmp4)
+
+
+p=ggplot(tmp4, aes(x=sample, fill=cell, y = pc.of.sample)) +theme_bw()+
+  geom_bar(stat='identity', position='fill') + 
+  scale_fill_manual(values=sannot.pal)+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.title.y=element_blank(),panel.border = element_blank(),
+        axis.title.x=element_blank())
+
+p  
+  
+```
+
+
+
+
+```{r}
+# pie chart
+ratio=(table(sample)/length(sample))*100
+
+# Create Data
+data <- data.frame(
+  cell=paste(names(ratio),': ',round(ratio,2),'%',sep=''),
+  value=as.numeric(ratio)
+)
+
+# Basic piechart
+
+
+a1=ggplot(data, aes(x="", y=value, fill=cell)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0)+
+  scale_fill_manual(values=as.character(annot.palf(length(unique(sample.palf)))))+
+  theme_void()
+
+a1
+```
+
+
+
+
+
+
+```{r}
+
+emb=con$embedding
+emb=emb[(emb[,1]>(-13) & emb[,1] <(10)),]
+nname=rownames(emb)
+
+
+bridge.ano=Toch(annot[nname])
+bridge.ano=bridge.ano[bridge.ano %in% c('Mesenchymal','SCP-like','Noradrenergic')]
+
+#bridge.ano=bridge.ano[bridge.ano %in% c('SCP-like')]
+
+nname=names(bridge.ano)
+
+emb=emb[nname,]
+plot(emb)
+abline(h=(-19))
+
+emb=emb[emb[,2]<(-19),]
+
+
+nname=rownames(emb)
+
+dannot.palf2 <- function(n) return(annot.pal[unique(Toch(bridge.ano))])
+
+bridge.ano=bridge.ano[nname]
+a2=con$plotGraph(groups=bridge.ano,alpha=0.3,size=0.5,plot.na=F,font.size = c(5, 6),palette=dannot.palf2)
+a2
+```
+
+
+
+
+```{r}
+
+
+gs=c('TH','PHOX2B','NPY','ERBB3','PLP1','SOX10','PRRX1','DCN','COL1A1')
+
+lcol=3
+lrow=3
+lis=list()
+for (gene in gs){
+  print(gene)
+  alpha =0.6
+  if (gene %in% c('IL10','IL1B')){
+    alpha =0.5
+  }
+  # a=con$plotGraph(colors =exp[gene,cname],title=gene,alpha =alpha,plot.na=F,size=0.2)+ theme(plot.title = element_text(size=19,hjust = 0.5))
+  a=con$plotGraph(colors =exp[gene,nname],alpha =alpha,plot.na=F,size=0.3)+annotate("text", x = -11+nchar(gene)*0.5, y=-20.9, label = gene,size=3.9)
+  lis[[gene]]=a
+}
+b=  cowplot::plot_grid(plotlist=lis, ncol=lrow, nrow=lcol)
+ggsave('S2a.png',b,width = 2*lrow,height=2*lcol)
+b
+```
+
+
+
+
+
+```{r}
+
+
+cname=names(annot[annot %in% c('SCP-like','Mesenchymal','Noradrenergic')])
+ano2=data.frame('Cell'=Toch(annot)[cname],'Sample'=sample[cname])
+
+table(annot[cname])
+
+
+# Annotation vs sample
+tmp2 <- acast(ano2, Cell ~ Sample, fun.aggregate=length)
+head(tmp2)
+# Normalise for the number of cells in each library
+tmp3 <- (sweep(tmp2, 2, colSums(tmp2), FUN='/'))
+
+tab=tmp3['SCP-like',]
+
+tab=sort(tab,decreasing=T)
+tab
+
+
+
+
+
+# barplot with error bar 
+
+dat=data.frame('SCP'=tmp2['SCP-like',],'all'=colSums(tmp2),'sample'=colnames(tmp2))
+dat$ratio=dat$SCP/dat$all
+
+
+getSE=function(p_hat,n){
+  z=1.96
+  se=z*sqrt(p_hat*(1-p_hat)/n)
+  return(se)
+}
+
+
+dat$se=apply(dat,1,function(x) getSE(as.numeric(x[4]),as.numeric(x[2])))
+
+ratio=dat$ratio 
+names(ratio)=dat$sample
+levels=names(sort(ratio,decreasing = TRUE))
+
+dat$sample=ordered(as.factor(dat$sample),levels=levels)
+
+
+# Use 95% confidence intervals instead of SEM
+p=ggplot(dat, aes(x=sample, y=ratio, fill=sample))   +theme_classic() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("")  + ylab('Fraction of Bridge cells')+
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=ratio-se, ymax=ratio+se),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9))
+p=p+scale_fill_manual(values=sample.pal)
+p=p+theme(legend.position="none",legend.title = element_blank(),legend.key.size = unit(0.8, "lines"),
+          legend.text = element_text(size=8))
+
+p=p+geom_text(data = dat, aes(x = sample, y = ratio+se + 0.03, label = SCP),size=2.9)
+
+p
+
+ggsave(paste('S1','.boxplot4.pdf',sep=''),p,height=2.7,width=3.6)
+
+
+```
+
+
+
+
+```{r}
+
+
+#
+# velocity  (prepare data )
+
+
+spliced=readRDS('/home/meisl/Workplace/neuroblastoma/velocity/spliced.rds')
+unspliced=readRDS('/home/meisl/Workplace/neuroblastoma/velocity/unspliced.rds')
+
+output=function(appname,group4,emb,spliced,unspliced){
+  
+  obs=data.frame('name'=names(group4),'clusters'=group4)
+  cell=names(group4)
+  
+  splicedf=spliced[,cell]
+  unsplicedf=unspliced[,cell]
+  gs=rownames(splicedf)
+  
+  Matrix::writeMM(splicedf,paste(appname,'.splicedf.mtx',sep=''))
+  Matrix::writeMM(unsplicedf,paste(appname,'.unsplicedf.mtx',sep=''))
+  write.csv(obs,paste(appname,'.obs.csv',sep=''),row.names=F)
+  write.csv(emb,paste(appname,'.emb.csv',sep=''),row.names=F,col.names=F)
+  write.csv(gs,paste(appname,'.gs.csv',sep=''),row.names=F,col.names=T)
+}
+
+# NB12 NB13 NB15 NB17 NB18 NB20 NB23 NB26
+
+nname=intersect(colnames(spliced),nname)
+
+table(sample[nname],Toch(bridge.ano[nname]))
+
+
+
+
+select=c('NB12', 'NB13' ,'NB15', 'NB17', 'NB18', 'NB20' ,'NB23', 'NB26')
+
+
+lis=list()
+select=c('NB26','NB13','NB12','NB23','NB20')
+for (i in select){
+  tnname=nname[grepl(i,nname)]
+  output(paste('bride8.',i,sep=''),bridge.ano[tnname],con$embedding[tnname,],spliced,unspliced)
+  #lis[[i]]=con$plotGraph(groups=bridge.ano[tnname],title=i,alpha=0.3,size=0.5,plot.na=F,font.size = c(5, 6),palette=dannot.palf2)
+}
+
+```
+
