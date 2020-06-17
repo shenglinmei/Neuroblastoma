@@ -9,4 +9,4 @@ The following links provide interactive views to the Conos joint alignment resul
 
 Joint analysis of all samples [view](http://pklab.med.harvard.edu/nikolas/pagoda2/frontend/current/pagodaURL/index.html?fileURL=http://pklab.med.harvard.edu/shenglin//neuroblastoma/apps//NB.all.bin)
 
-Analysis of Myeloid cells [view](http://pklab.med.harvard.edu/nikolas/pagoda2/frontend/current/pagodaURL/index.html?fileURL=http://pklab.med.harvard.edu/shenglin//neuroblastoma/apps//NB.data.bin)
+Analysis of Adrenergic, MES and SCP-like cells  [view](http://pklab.med.harvard.edu/nikolas/pagoda2/frontend/current/pagodaURL/index.html?fileURL=http://pklab.med.harvard.edu/shenglin//neuroblastoma/apps//NB.data.bin)
